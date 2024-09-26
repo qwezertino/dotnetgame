@@ -1,0 +1,124 @@
+@page "/game"
+@using System.Drawing
+@using Blazor.Extensions
+@using Blazor.Extensions.Canvas
+@using Blazor.Extensions.Canvas.Canvas2D
+
+@inject WebSocketService WebSocketService
+@inject IJSRuntime JS
+
+<img @ref="_spritesheet" hidden src="assets/player.png" />
+
+<div id="theCanvas" style="position: fixed; opacity: 1; background-color: black; width: 100%; height: 100%">
+    <BECanvas Width="512" Height="512" @ref="_canvasReference"></BECanvas>
+</div>
+@code {
+    private Canvas2DContext _context;
+    protected BECanvasComponent? _canvasReference;
+    protected ElementReference _spritesheet;
+    private int x = 256, y = 256;
+    private int previousX;
+    private int previousY;
+
+    protected Point _spritePosition = Point.Empty;
+    protected Point _spriteDirection = new Point(1, 1);
+    protected float _spriteSpeed = 0.25f;
+    protected Sprite _sprite;
+
+    protected override async Task OnInitializedAsync()
+    {
+        previousX = x;
+        previousY = y;
+
+        WebSocketService.OnMessageReceived += HandleMessageReceived;
+        await WebSocketService.ConnectAsync();
+
+        var positionMessage = $"move:{x}:{y}";
+        await WebSocketService.SendMessageAsync(positionMessage);
+
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+            return;
+        // Start listening for key events
+        await JS.InvokeVoidAsync("addKeyListener", DotNetObjectReference.Create(this));
+
+        this._context = await this._canvasReference.CreateCanvas2DAsync();
+        await DrawFieldAsync();
+
+        _sprite = new Sprite() {
+            Size = new Size(64, 64),
+            SpriteSheet = _spritesheet
+        };
+
+        // Render the player on the canvas
+        await RequestRender();
+    }
+    private async Task DrawFieldAsync()
+    {
+        // Fill the canvas with a green background (or whatever your field color is)
+        await this._context.SetFillStyleAsync("black");
+        await this._context.FillRectAsync(0, 0, 512, 512); // Draw the entire game area
+
+        // Optionally, you can draw grid lines or other elements here
+        await this._context.SetStrokeStyleAsync("white");
+        for (int i = 0; i < 512; i += 32) // Draw grid lines every 50 pixels
+        {
+            await this._context.BeginPathAsync();
+            await this._context.MoveToAsync(i, 0);
+            await this._context.LineToAsync(i, 512);
+            await this._context.StrokeAsync();
+
+            await this._context.BeginPathAsync();
+            await this._context.MoveToAsync(0, i);
+            await this._context.LineToAsync(512, i);
+            await this._context.StrokeAsync();
+        }
+    }
+    private void HandleMessageReceived(string message)
+    {
+        Console.WriteLine($"Message received from server: {message}");
+        var parts = message.Split(':');
+        if (parts.Length == 3 && parts[0] == "move")
+        {
+            x = int.Parse(parts[1]);
+            y = int.Parse(parts[2]);
+
+            RequestRender();
+        }
+    }
+
+    private async Task RequestRender()
+    {
+        //move player image to new position
+        await _context.ClearRectAsync(previousX, previousY, _sprite.Size.Height, _sprite.Size.Width);
+        await _context.DrawImageAsync(_sprite.SpriteSheet, x, y, _sprite.Size.Height, _sprite.Size.Width); //16, 16
+        previousX = x;
+        previousY = y;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        // Cleanup WebSocket connection and events
+        WebSocketService.OnMessageReceived -= HandleMessageReceived;
+        await WebSocketService.DisconnectAsync();
+    }
+
+    [JSInvokable]
+    public async Task OnKeyPress(string key)
+    {
+        switch (key)
+        {
+            case "w": y = Math.Max(y - 2, 0); break;  // Move up
+            case "a": x = Math.Max(x - 2, 0); break;  // Move left
+            case "s": y = Math.Min(y + 2, 512); break;  // Move down
+            case "d": x = Math.Min(x + 2, 512); break;  // Move right
+        }
+
+        // Send the updated position to the server via WebSocket
+        var positionMessage = $"move:{x}:{y}";
+        await WebSocketService.SendMessageAsync(positionMessage);
+    }
+
+}
